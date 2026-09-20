@@ -26,7 +26,7 @@ pub fn save_checked(
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("manifest.json", options)?;
     zip.write_all(&serde_json::to_vec(&Manifest {
-        version: 1,
+        version: 2,
         project: project.clone(),
     })?)?;
     let used: HashSet<_> = project
@@ -63,7 +63,7 @@ pub fn load(path: &Path) -> Result<(Project, HashMap<String, Vec<u8>>)> {
         .read_to_string(&mut manifest)?;
     let m: Manifest = serde_json::from_str(&manifest)?;
     anyhow::ensure!(
-        m.version == 1,
+        matches!(m.version, 1 | 2),
         "この作業ファイルのバージョンには対応していません"
     );
     let mut sources = HashMap::new();

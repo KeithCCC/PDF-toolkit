@@ -735,3 +735,10 @@ dialog .hint {
   max-height: 160px;
   overflow: auto;
 }
+
+#pdf-options { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-top: 14px; }
+#pdf-options[hidden], #target-options[hidden], #password-options[hidden], #office-quality[hidden] { display: none; }
+.comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.comparison figure { margin: 0; overflow: auto; max-height: 42vh; background: var(--active-bg); padding: 10px; }
+.comparison figcaption { margin-bottom: 8px; font-weight: 600; }
+.comparison img { display: block; max-width: none; }

@@ -16,9 +16,9 @@
   assert(state.project.groups[0].pages[0].comments.length===1 && state.project.groups[1].pages[0].comments.length===0,'Independent copied comment');
   await run({op:'save_project',path:root+'/native/work.pdftk'});
   await run({op:'open_project',path:root+'/native/work.pdftk'});
-  await run({op:'prepare_export',format:'pdf',groups:[state.project.groups[0].id]});
+  const protectedSource = await run({op:'prepare_export',format:'pdf',groups:[state.project.groups[0].id]});
   let rejected = false;
-  try {await run({op:'finish_export',path:root,overwrite:true});} catch(error) {rejected=String(error).includes('元の入力');}
+  try {await run({op:'finish_export',token:protectedSource.token,path:root,overwrite:true});} catch(error) {rejected=String(error).includes('元の入力');}
   assert(rejected,'Original PDF overwrite protection after reopening project');
   await run({op:'prepare_office',path:root+'/sample.docx',sheets:[]});
   state=await run({op:'accept_office'});
@@ -30,7 +30,7 @@
   for(const format of ['pdf','docx','xlsx']) {
     const result=await run({op:'prepare_export',format,quality:'standard',groups:[]});
     assert(result.previews.length>=3,'Actual export previews');
-    await run({op:'finish_export',path:root+'/native',overwrite:true});
+    await run({op:'finish_export',token:result.token,path:root+'/native',overwrite:true});
   }
   let invalid=false;try{await run({op:'import',path:root+'/native/work.pdftk'});}catch{invalid=true;}
   assert(invalid,'Corrupt PDF is rejected');

@@ -3,6 +3,7 @@ fn project() -> Project {
     Project {
         groups: vec![
             Group {
+                pdf_settings: Default::default(),
                 id: "a".into(),
                 name: "one".into(),
                 pages: (0..3)
@@ -20,6 +21,7 @@ fn project() -> Project {
                     .collect(),
             },
             Group {
+                pdf_settings: Default::default(),
                 id: "b".into(),
                 name: "two".into(),
                 pages: vec![],

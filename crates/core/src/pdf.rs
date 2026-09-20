@@ -5,6 +5,15 @@ use lopdf::{dictionary, Document, Object, Stream};
 use pdfium_render::prelude::*;
 use std::{collections::HashMap, io::Cursor, path::Path, sync::OnceLock};
 
+// pdfium-render serializes individual FFI calls, but error state and multi-call
+// document operations must also stay together across separate Engine instances.
+static PDF_OPERATIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn operation_lock() -> Result<std::sync::MutexGuard<'static, ()>> {
+    PDF_OPERATIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("PDF処理の排他制御を取得できません"))
+}
+
 pub struct Engine {
     pdfium: Pdfium,
 }
@@ -39,6 +48,7 @@ impl Engine {
         source: &str,
         check: impl Fn(usize, usize) -> Result<()>,
     ) -> Result<(Vec<u8>, Vec<Page>)> {
+        let _operation = operation_lock()?;
         let input = self
             .pdfium
             .load_pdf_from_byte_slice(bytes, password)
@@ -121,6 +131,7 @@ impl Engine {
         sources: &HashMap<String, Vec<u8>>,
         check: impl Fn(usize, usize) -> Result<()>,
     ) -> Result<Vec<u8>> {
+        let _operation = operation_lock()?;
         anyhow::ensure!(!pages.is_empty(), "空のグループは保存できません");
         anyhow::ensure!(
             pages.len() <= u16::MAX as usize,
@@ -156,6 +167,7 @@ impl Engine {
         Ok(output)
     }
     pub fn render(&self, bytes: &[u8], index: u16, width: i32, unrotated: bool) -> Result<Vec<u8>> {
+        let _operation = operation_lock()?;
         let document = self.pdfium.load_pdf_from_byte_slice(bytes, None)?;
         let mut page = document.pages().get(index as i32)?;
         if unrotated {
@@ -172,6 +184,35 @@ impl Engine {
         let mut out = Cursor::new(vec![]);
         img.write_to(&mut out, ImageFormat::Png)?;
         Ok(out.into_inner())
+    }
+    pub fn verify_output(
+        &self,
+        bytes: &[u8],
+        password: Option<&str>,
+        expected_pages: usize,
+        check: impl Fn(usize, usize) -> Result<()>,
+    ) -> Result<()> {
+        let _operation = operation_lock()?;
+        let document = self
+            .pdfium
+            .load_pdf_from_byte_slice(bytes, password)
+            .context("最終PDFを開けません")?;
+        let count = document.pages().len() as usize;
+        anyhow::ensure!(
+            count == expected_pages && count > 0,
+            "出力後のページ数が一致しません"
+        );
+        for index in 0..count {
+            check(index, count)?;
+            document.pages().get(index as i32)?.render_with_config(
+                &PdfRenderConfig::new()
+                    .set_target_width(64)
+                    .set_maximum_height(128)
+                    .render_annotations(true),
+            )?;
+        }
+        check(count, count)?;
+        Ok(())
     }
     pub fn sample(&self) -> Result<Vec<u8>> {
         let mut doc = Document::with_version("1.7");

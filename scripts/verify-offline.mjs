@@ -15,8 +15,8 @@ try{
   const image=await run({op:'thumbnail',id:g.pages[0].id,width:400});
   if(!image.startsWith('data:image/png'))throw Error('Offline thumbnail failed');
   for(const format of ['pdf','docx','xlsx']){
-    await run({op:'prepare_export',format,quality:'standard',groups:[g.id]});
-    await run({op:'finish_export',path:'C:/Development/projects/PDF-toolkit/output/verification/offline',overwrite:true});
+    const result=await run({op:'prepare_export',format,quality:'standard',groups:[g.id]});
+    await run({op:'finish_export',token:result.token,path:'C:/Development/projects/PDF-toolkit/output/verification/offline',overwrite:true});
   }
   await run({op:'remove_group',id:g.id});
   console.log('PASS: installed app, WebView network disabled, local rendering and PDF/DOCX/XLSX export');

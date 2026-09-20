@@ -24,6 +24,16 @@ BasicのPDF編集・PDF→DOCX/XLSX出力はOffice不要。DOCX→PDFにはWord�
 
 ## 開発
 
+### 追加機能の試験版
+
+追加開発の検証ビルドでは、「書き出す」→PDFから圧縮モード、目標MB、開くパスワードを設定できます。前後比較でPDF・ページ・倍率を切り替え、表示した最終サイズを確認して保存します。目標未達の場合は了承のチェックが必要です。
+
+パスワードは出力するPDFだけを保護します。`.pdftk` と復旧データは暗号化されず、秘密値も保存しません。保護設定のある作業を再開した場合はパスワードを再入力します。新しい作業形式はv2で、旧Basic版では開けません。旧v1作業の読み込みには対応しています。
+
+現在のローカル検証実行ファイルは `target/debug/pdf-toolkit.exe`。通常版とは別IDの検証ビルドで、既存の復旧データと分離しています。配布インストーラーはまだ更新していません。ページ番号・透かし・Explorer結合は後続開発です。
+
+### ビルドと検証
+
 前提：Windows x64、Rust/MSVC、Visual Studio C++ Build Tools、Node.js、WebView2。
 
 ```powershell
@@ -35,7 +45,8 @@ npm run tauri dev
 PDFiumはchromium/7881をSHA-256検証付きで取得します。フォントと依存ライセンスはリポジトリ内の `assets/` にあります。依存バージョンはCargo.lockとpackage-lock.jsonで固定しています。
 
 ```powershell
-cargo test -p pdf-toolkit-core
+cargo test --workspace
+node --experimental-strip-types --test scripts/test-output.mjs
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 npm run build
@@ -56,7 +67,7 @@ cargo run -p pdf-toolkit-core --example verify_office
 - `src-tauri/`：Rustコマンド、Undo/Redo、進捗・キャンセル、自動保存、配布設定。
 - `src/`：TypeScriptによるUI。
 - [要件](01_Requirements.md)、[開発プロンプト](02_Development_Prompt.md)。
-- [追加開発プロンプト：圧縮・ページ番号・透かし・パスワード・Explorer結合](03_Additional_Development_Prompt.md)（追加機能は未実装）。
+- [追加開発プロンプト：圧縮・ページ番号・透かし・パスワード・Explorer結合](03_Additional_Development_Prompt.md)（開発中：圧縮・暗号化・比較プレビューを検証ビルドへ統合済み。追加進捗25％。進捗は [追加開発進捗](docs/additional-progress.md)）。
 - [実装計画](docs/implementation-plan.md)、[要件対応](docs/requirements-matrix.md)、[進捗](docs/progress.md)。
 - [技術判断](docs/technical-decisions.md)、[検証結果と制限](docs/test-report.md)、[依存ライセンス](assets/licenses/THIRD_PARTY.md)。
 

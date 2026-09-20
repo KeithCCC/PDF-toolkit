@@ -6,6 +6,7 @@ use pdf_toolkit_core::{
     model::{self, Comment, Group, Project},
     office,
     pdf::Engine,
+    pipeline::{self, OutputReport, PdfOutputSettings},
     storage,
 };
 use serde_json::{json, Value};
@@ -27,6 +28,9 @@ struct Session {
     undo: Vec<Project>,
     redo: Vec<Project>,
     pending: Vec<(String, Vec<u8>)>,
+    output_token: Option<String>,
+    output_reports: Vec<OutputReport>,
+    comparisons: Vec<(Vec<u8>, Vec<u8>, usize)>,
     pending_import: Option<(String, Vec<u8>)>,
     dirty: bool,
     recovery_error: Option<String>,
@@ -65,6 +69,66 @@ fn checkpoint(s: &mut Session, old: Project) {
     s.redo.clear();
     s.dirty = true;
 }
+fn clear_output(s: &mut Session) {
+    s.pending.clear();
+    s.output_token = None;
+    s.output_reports.clear();
+    s.comparisons.clear();
+}
+fn authorize_output(s: &Session, request: &Value) -> Result<()> {
+    anyhow::ensure!(
+        s.output_token
+            .as_deref()
+            .is_some_and(|token| Some(token) == request["token"].as_str())
+            && !s.pending.is_empty(),
+        "出力結果が更新されました。もう一度確認してください"
+    );
+    for report in &s.output_reports {
+        report.authorize_save(request["acknowledgeUnmet"].as_bool().unwrap_or(false))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    #[test]
+    fn stale_output_token_and_unacknowledged_target_are_rejected() {
+        let mut session = Session {
+            output_token: Some("current".into()),
+            ..Default::default()
+        };
+        session.pending.push(("test.pdf".into(), vec![1]));
+        session
+            .output_reports
+            .push(pdf_toolkit_core::pipeline::OutputReport {
+                original_bytes: 10,
+                final_bytes: 10,
+                target_bytes: Some(1),
+                met_target: Some(false),
+                attempts: 1,
+                setting: "test".into(),
+                warnings: vec![],
+                protected: false,
+            });
+        assert!(
+            authorize_output(&session, &json!({"token":"old","acknowledgeUnmet":true})).is_err()
+        );
+        assert!(authorize_output(&session, &json!({"token":"current"})).is_err());
+        assert!(authorize_output(
+            &session,
+            &json!({"token":"current","acknowledgeUnmet":true})
+        )
+        .is_ok());
+        clear_output(&mut session);
+        assert!(session.pending.is_empty());
+        assert!(authorize_output(
+            &session,
+            &json!({"token":"current","acknowledgeUnmet":true})
+        )
+        .is_err());
+    }
+}
 fn import_bytes(
     s: &mut Session,
     e: &Engine,
@@ -84,6 +148,7 @@ fn import_bytes(
     s.sources.insert(source.clone(), data);
     s.names.insert(source, name.into());
     s.project.groups.push(Group {
+        pdf_settings: PdfOutputSettings::default(),
         id: model::id(),
         name: std::path::Path::new(name)
             .file_stem()
@@ -120,6 +185,10 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
     }
     if op == "recovery_exists" {
         return Ok(json!(state.recovery.exists()));
+    }
+    if op == "discard_export" {
+        clear_output(&mut s);
+        return Ok(Value::Null);
     }
     let e = Engine::new(&state.dll)?;
     if op == "thumbnail" {
@@ -180,6 +249,7 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
         )?)));
     }
     if op == "prepare_export" {
+        clear_output(&mut s);
         let format = field(&v, "format")?;
         anyhow::ensure!(
             ["pdf", "docx", "xlsx"].contains(&format),
@@ -196,8 +266,11 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
         anyhow::ensure!(!groups.is_empty(), "グループがありません");
         let mut pending = vec![];
         let mut previews = vec![];
+        let mut reports = vec![];
+        let mut comparisons = vec![];
         let mut used = std::collections::HashSet::new();
         for (i, g) in groups.iter().enumerate() {
+            let settings = &g.pdf_settings;
             check()?;
             model::validate_name(&g.name)?;
             let filename = format!("{}.{format}", g.name.trim_end_matches(".pdf"));
@@ -218,8 +291,37 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
                 Ok(())
             })?;
             let bytes = if format == "pdf" {
-                previews.push(uri(e.render(&pdf, 0, 700, false)?));
-                pdf
+                let output =
+                    pipeline::prepare_pdf(&pdf, settings, v["password"].as_str(), |n, total| {
+                        check()?;
+                        progress(
+                            &format!("{}：圧縮候補 {} / {}", g.name, n, total),
+                            (n * 100 / total) as u32,
+                        );
+                        Ok(())
+                    })?;
+                // Verify actual final file with PDFium, then preview the decrypted final PDF.
+                e.verify_output(
+                    &output.bytes,
+                    if settings.protect {
+                        v["password"].as_str()
+                    } else {
+                        None
+                    },
+                    g.pages.len(),
+                    |n, total| {
+                        check()?;
+                        progress(
+                            &format!("{}：最終PDFを検証中 {} / {}", g.name, n, total),
+                            (n * 100 / total) as u32,
+                        );
+                        Ok(())
+                    },
+                )?;
+                previews.push(uri(e.render(&output.preview, 0, 700, false)?));
+                comparisons.push((pdf, output.preview, g.pages.len()));
+                reports.push(output.report);
+                output.bytes
             } else {
                 let mut images = vec![];
                 for (n, p) in g.pages.iter().enumerate() {
@@ -249,7 +351,33 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
         check()?;
         let names: Vec<_> = pending.iter().map(|(n, _)| n.clone()).collect();
         s.pending = pending;
-        return Ok(json!({"names":names,"previews":previews}));
+        s.output_reports = reports;
+        s.comparisons = comparisons;
+        let token = model::id();
+        s.output_token = Some(token.clone());
+        return Ok(
+            json!({"token":token,"names":names,"previews":previews,"reports":s.output_reports,"pageCounts":s.comparisons.iter().map(|(_,_,n)|*n).collect::<Vec<_>>()}),
+        );
+    }
+    if op == "output_preview" {
+        anyhow::ensure!(
+            s.output_token
+                .as_deref()
+                .is_some_and(|t| Some(t) == v["token"].as_str()),
+            "出力結果が更新されました"
+        );
+        let group = v["group"].as_u64().context("グループが不正です")? as usize;
+        let index = v["index"].as_u64().context("ページが不正です")? as usize;
+        let (before, after, count) = s.comparisons.get(group).context("比較データがありません")?;
+        anyhow::ensure!(
+            index < *count && index <= u16::MAX as usize,
+            "ページが範囲外です"
+        );
+        let width = v["width"].as_i64().unwrap_or(700).clamp(200, 2000) as i32;
+        let before = uri(e.render(before, index as u16, width, false)?);
+        check()?;
+        let after = uri(e.render(after, index as u16, width, false)?);
+        return Ok(json!({"before":before,"after":after}));
     }
     if op == "export_conflicts" {
         let dir = PathBuf::from(field(&v, "path")?);
@@ -261,6 +389,7 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
             .collect::<Vec<_>>()));
     }
     if op == "finish_export" {
+        authorize_output(&s, &v)?;
         let dir = PathBuf::from(field(&v, "path")?);
         anyhow::ensure!(dir.is_dir(), "保存先フォルダーがありません");
         let overwrite = v["overwrite"].as_bool().unwrap_or(false);
@@ -268,10 +397,20 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
         for (n, b) in &s.pending {
             check()?;
             let path = dir.join(n);
-            storage::write_file(&path, b, overwrite, &s.inputs)?;
+            storage::write_file(&path, b, overwrite, &s.inputs).with_context(|| {
+                format!(
+                    "保存済み：{}。保存できなかったファイル：{}",
+                    written
+                        .iter()
+                        .map(|p: &PathBuf| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("、"),
+                    path.display()
+                )
+            })?;
             written.push(path);
         }
-        s.pending.clear();
+        clear_output(&mut s);
         return Ok(json!(written));
     }
     if op == "save_project" {
@@ -291,7 +430,27 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
         return Ok(Value::Null);
     }
     let before = s.project.clone();
+    clear_output(&mut s);
     match op {
+        "set_output_settings" => {
+            let settings: PdfOutputSettings = serde_json::from_value(v["settings"].clone())?;
+            if settings.mode == pipeline::CompressionMode::Target {
+                pdf_toolkit_core::output::TargetSize::from_mb(&settings.target_mb)?;
+            }
+            let ids = strings(&v, "groups");
+            anyhow::ensure!(
+                !ids.is_empty()
+                    && ids
+                        .iter()
+                        .all(|id| s.project.groups.iter().any(|g| &g.id == id)),
+                "出力対象がありません"
+            );
+            for group in &mut s.project.groups {
+                if ids.contains(&group.id) {
+                    group.pdf_settings = settings.clone();
+                }
+            }
+        }
         "sample" => {
             let b = e.sample()?;
             import_bytes(&mut s, &e, &b, None, "サンプル.pdf", &state.cancel)?;
@@ -394,7 +553,16 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
         "extract" => {
             let target = model::id();
             let name = format!("抽出 {}", s.project.groups.len() + 1);
+            let ids = strings(&v, "ids");
+            let pdf_settings = s
+                .project
+                .groups
+                .iter()
+                .find(|g| g.pages.iter().any(|p| ids.contains(&p.id)))
+                .map(|g| g.pdf_settings.clone())
+                .unwrap_or_default();
             s.project.groups.push(Group {
+                pdf_settings,
                 id: target.clone(),
                 name,
                 pages: vec![],
@@ -422,7 +590,9 @@ fn execute(state: &State, app: &tauri::AppHandle, v: Value) -> Result<Value> {
             anyhow::ensure!(at > 0 && at < g.pages.len(), "分割位置が無効です");
             let pages = g.pages.split_off(at);
             let name = format!("{} 分割", g.name);
+            let pdf_settings = g.pdf_settings.clone();
             s.project.groups.push(Group {
+                pdf_settings,
                 id: model::id(),
                 name,
                 pages,

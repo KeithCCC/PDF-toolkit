@@ -1,11 +1,54 @@
 use pdf_toolkit_core::{model::*, storage};
 use std::collections::HashMap;
+
+#[test]
+fn output_settings_migrate_from_v1_and_keep_only_protection_flag() {
+    use pdf_toolkit_core::pipeline::{CompressionMode, PdfOutputSettings};
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.pdftk");
+    let mut archive = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    archive
+        .start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive
+        .write_all(br#"{"version":1,"project":{"groups":[{"id":"g","name":"old","pages":[]}]}}"#)
+        .unwrap();
+    archive.finish().unwrap();
+    let (mut project, sources) = storage::load(&path).unwrap();
+    assert!(!project.groups[0].pdf_settings.protect);
+    project.groups[0].pdf_settings = PdfOutputSettings {
+        mode: CompressionMode::Target,
+        target_mb: "10".into(),
+        protect: true,
+    };
+    storage::save(&path, &project, &sources).unwrap();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let mut manifest = String::new();
+    zip.by_name("manifest.json")
+        .unwrap()
+        .read_to_string(&mut manifest)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(value["version"], 2);
+    assert!(!manifest.contains("password"));
+    assert!(
+        storage::load(&path).unwrap().0.groups[0]
+            .pdf_settings
+            .protect
+    );
+    assert!(
+        serde_json::from_value::<PdfOutputSettings>(serde_json::json!({"password":"secret"}))
+            .is_err()
+    );
+}
 #[test]
 fn project_contains_input_bytes_and_roundtrips() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("work.pdftk");
     let p = Project {
         groups: vec![Group {
+            pdf_settings: Default::default(),
             id: "g".into(),
             name: "文書".into(),
             pages: vec![Page {

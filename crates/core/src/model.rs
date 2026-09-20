@@ -28,6 +28,8 @@ pub struct Page {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Group {
+    #[serde(default)]
+    pub pdf_settings: crate::pipeline::PdfOutputSettings,
     pub id: String,
     pub name: String,
     pub pages: Vec<Page>,

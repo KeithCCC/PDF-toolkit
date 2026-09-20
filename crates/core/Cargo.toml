@@ -16,3 +16,4 @@ base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tempfile = "3"
 roxmltree = "0.21"
+getrandom = "0.4"

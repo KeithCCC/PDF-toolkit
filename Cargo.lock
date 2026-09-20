@@ -2827,6 +2827,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "fontdue",
+ "getrandom 0.4.3",
  "image",
  "lopdf",
  "pdfium-render",

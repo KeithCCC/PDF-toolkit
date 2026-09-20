@@ -1,4 +1,5 @@
 import "./style.css";
+import { outputFields, bindOutputFields, readOutputFields, outputSummary, type PdfSettings, type ExportResult } from "./output";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,7 +24,7 @@ type Page = {
   rotation: number;
   comments: Comment[];
 };
-type Group = { id: string; name: string; pages: Page[] };
+type Group = { id: string; name: string; pages: Page[]; pdf_settings: PdfSettings };
 type Snapshot = {
   project: { groups: Group[] };
   names: Record<string, string>;
@@ -511,6 +512,9 @@ async function importPaths(paths: string[]) {
 }
 async function exportDialog(groups: string[] = []) {
   if (!allPages().length) return;
+  await call({op:"discard_export"});
+  const chosen = state.project.groups.filter(g=>!groups.length || groups.includes(g.id));
+  const defaults: PdfSettings = {...(chosen[0]?.pdf_settings ?? {mode:"off",target_mb:"10",protect:false}), protect:chosen.some(g=>g.pdf_settings?.protect)};
   dialog(
     "書き出し",
     `<p>対象：${groups.length ? "選択したグループ" : "すべてのグループ"}。元ファイルは変更しません。</p><div class="export-groups">${state.project.groups
@@ -521,8 +525,16 @@ async function exportDialog(groups: string[] = []) {
       )
       .join(
         "",
-      )}</div><label>形式<select id="format"><option value="pdf">PDF</option><option value="docx">Word（ページ画像）</option><option value="xlsx">Excel（1ページ＝1シート）</option></select></label><label>画像の品質<select id="quality"><option value="standard">標準 · 150 dpi</option><option value="high">高画質 · 300 dpi</option></select></label><div class="dialog-actions"><button id="prepare-export" class="primary">変換結果を確認</button></div>`,
+      )}</div><label>形式<select id="format"><option value="pdf">PDF</option><option value="docx">Word（ページ画像）</option><option value="xlsx">Excel（1ページ＝1シート）</option></select></label><label id="office-quality">画像の品質<select id="quality"><option value="standard">標準 · 150 dpi</option><option value="high">高画質 · 300 dpi</option></select></label>${outputFields(defaults)}<div class="dialog-actions"><button id="prepare-export" class="primary">変換結果を確認</button></div>`,
   );
+  bindOutputFields();
+  document.querySelectorAll<HTMLInputElement>('input[name="export-group"]').forEach(box=>box.addEventListener('change',()=>{
+    if(box.checked && state.project.groups.find(g=>g.id===box.value)?.pdf_settings.protect) {
+      const protect=$<HTMLInputElement>('#protect-pdf');
+      protect.checked=true;
+      protect.dispatchEvent(new Event('change'));
+    }
+  }));
   $("#prepare-export").onclick = async () => {
     const format = $<HTMLSelectElement>("#format").value,
       quality = $<HTMLSelectElement>("#quality").value;
@@ -535,21 +547,56 @@ async function exportDialog(groups: string[] = []) {
       toast("出力するグループを選択してください。", true);
       return;
     }
+    let password: string | undefined;
+    if(format === 'pdf') {
+      try {
+        const input = readOutputFields();
+        if(!await change({op:'set_output_settings',groups,settings:input.settings})) return;
+        password = input.password;
+      } catch(err) { toast(String(err),true); return; }
+    }
     closeDialog();
     try {
       const result = await work("出力を準備しています…", () =>
-        call<{ names: string[]; previews: string[] }>({
+        call<ExportResult>({
           op: "prepare_export",
           format,
           quality,
           groups,
+          password,
         }),
       );
-      dialog(
+      password = undefined;
+      const unmet = result.reports.some(r=>r.met_target===false);
+      const confirmDialog = dialog(
         "出力内容の確認",
-        `<p>${result.names.map(esc).join(" / ")}</p><p class="hint">${format === "pdf" ? "各PDFの先頭ページを表示しています。" : "生成ファイルのページ寸法・画像配置から描画しています。"}</p><div class="export-previews">${result.previews.map((src, i) => `<figure><img src="${src}" alt="変換結果 ${i + 1}"><figcaption>${i + 1}</figcaption></figure>`).join("")}</div><div class="dialog-actions"><button id="finish-export" class="primary">保存先を選んで書き出す</button></div>`,
+        `<p>${result.names.map(esc).join(" / ")}</p>${format==='pdf'?`<label>比較するPDF<select id="compare-group">${result.names.map((name,i)=>`<option value="${i}">${esc(name)}</option>`).join('')}</select></label><div id="output-summary"></div><div class="field-grid"><label>ページ<input id="compare-page" type="number" min="1" max="${result.pageCounts[0]}" value="1"></label><label>比較倍率<select id="compare-width"><option value="500">小</option><option value="900" selected>標準</option><option value="1400">拡大</option></select></label></div><div class="comparison"><figure><figcaption>圧縮前</figcaption><img id="compare-before" alt="圧縮前のページ"></figure><figure><figcaption>最終出力</figcaption><img id="compare-after" alt="最終出力の同じページ"></figure></div>`:`<div class="export-previews">${result.previews.map((src,i)=>`<figure><img src="${src}" alt="変換結果 ${i+1}"></figure>`).join('')}</div>`}${unmet?'<label class="check"><input id="acknowledge-unmet" type="checkbox">目標未達のPDFがあります。実サイズを了承して保存します。</label>':''}<div class="dialog-actions"><button id="retry-export">設定を変更</button><button id="finish-export" class="primary" ${unmet?'disabled':''}>保存先を選んで書き出す</button></div>`,
         true,
       );
+      confirmDialog.addEventListener('close',()=>{void call({op:'discard_export'});},{once:true});
+      $('#retry-export').onclick=()=>{void exportDialog(groups);};
+      if(unmet) $('#acknowledge-unmet').onchange=()=>{$<HTMLButtonElement>('#finish-export').disabled=!$<HTMLInputElement>('#acknowledge-unmet').checked;};
+      if(format==='pdf') {
+        let generation=0;
+        const updateComparison=async()=>{
+          const revision=++generation;
+          const group=Number($<HTMLSelectElement>('#compare-group').value);
+          const page=$<HTMLInputElement>('#compare-page');
+          page.max=String(result.pageCounts[group]);
+          page.value=String(Math.min(result.pageCounts[group],Math.max(1,Math.trunc(Number(page.value)||1))));
+          $('#output-summary').innerHTML=outputSummary(result.reports[group]);
+          const width=Number($<HTMLSelectElement>('#compare-width').value);
+          try {
+            const images=await call<{before:string;after:string}>({op:'output_preview',token:result.token,group,index:Number(page.value)-1,width});
+            if(revision!==generation || !confirmDialog.open || !document.getElementById('compare-before')) return;
+            for(const side of ['before','after'] as const) {
+              const img=$<HTMLImageElement>(`#compare-${side}`); img.src=images[side]; img.style.width=`${width/2}px`;
+            }
+          } catch(err) {if(confirmDialog.open) toast(String(err),true);}
+        };
+        for(const id of ['compare-group','compare-page','compare-width']) $(`#${id}`).addEventListener('change',()=>void updateComparison());
+        await updateComparison();
+      }
       $("#finish-export").onclick = async () => {
         try {
           const path = await open({
@@ -575,6 +622,8 @@ async function exportDialog(groups: string[] = []) {
               op: "finish_export",
               path,
               overwrite: conflicts.length > 0,
+              token: result.token,
+              acknowledgeUnmet: !unmet || $<HTMLInputElement>('#acknowledge-unmet').checked,
             }),
           );
           closeDialog();
@@ -585,6 +634,8 @@ async function exportDialog(groups: string[] = []) {
       };
     } catch (err) {
       toast(String(err), true);
+    } finally {
+      password = undefined;
     }
   };
 }
