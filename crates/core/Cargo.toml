@@ -1,0 +1,18 @@
+[package]
+name = "pdf-toolkit-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+pdfium-render = "=0.9.4"
+lopdf = "0.45"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+fontdue = "0.9"
+base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tempfile = "3"
+roxmltree = "0.21"

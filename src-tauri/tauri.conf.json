@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PDF Toolkit",
+  "version": "0.1.0",
+  "identifier": "lab.dailyai.pdf-toolkit",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PDF Toolkit",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 900,
+        "minHeight": 650
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../vendor/pdfium/bin/pdfium.dll": "pdfium.dll",
+      "../vendor/pdfium/LICENSE": "licenses/PDFium-LICENSE",
+      "../vendor/pdfium/licenses/": "licenses/pdfium/",
+      "../assets/fonts/OFL.txt": "licenses/NotoSansJP-OFL.txt",
+      "../assets/licenses/": "licenses/dependencies/"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      }
+    }
+  }
+}

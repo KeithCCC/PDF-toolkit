@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Local document dialogs and window events",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-confirm"
+  ]
+}
